@@ -32,7 +32,7 @@
     [(!=) (lambda (left right)
             (parsed `(op != ,left ,right)))]
     [(==) (lambda (left right)
-            (parsed `(op = ,left ,right)))]
+            (parsed `(op == ,left ,right)))]
     [(%dot) (lambda (left right)
               (parsed `(dot ,left ,right)))]
     [(<) (lambda (left right)
@@ -200,7 +200,12 @@
            (define right (first (parse-all right-side)))
            (values `(var ,type ,name ,right) #f)))]
 
-      
+      [(list (list '#%brackets expr ...) more ...)
+       (if (not current)
+         (error 'parse-expression "must have something next to brackets")
+         (let ()
+           (define inside (first (parse-all expr)))
+           (parse more precedence left (parsed `(lookup ,current ,inside)))))]
 
       ;; new foo()
       [(list 'new (and (? id?) constructor) (list '#%parens args ...)
@@ -208,7 +213,8 @@
        (if current
          (values (left current) stream)
          (let ()
-           (define output (parsed `(make ,constructor ,args)))
+           (define parsed-args (parse-args args))
+           (define output (parsed `(make ,constructor ,@parsed-args)))
            (parse rest precedence left output)))]
 
       [(list (list '#%parens args ...) more ...)
@@ -340,10 +346,19 @@
      (unparse-java more (string-append so-far (format "\n\tprivate ~a ~a;" type name)))]
     [(list (list 'constructor name body) more ...)
      (unparse-java more (string-append so-far (format "\n\tpublic ~a(){\n~a\n}" name (unparse-java body))))]
-    [(list (list 'method type name body) more ...)
+    [(list (list 'method name type body) more ...)
      (unparse-java more (string-append so-far (format "\n\tpublic ~a ~a(){\n~a\n}" type name (unparse-java body))))]
     [(list 'body (list 'call obj args ...) more ...)
-     (unparse-java `(body ,@more) (string-append so-far (format "~a(~a)" obj (apply string-append (map make-string (add-between args ","))))))]
+     (unparse-java `(body ,@more)
+                   (string-append so-far
+                                  (format "~a;"
+                                          (unparse-java `(expression (call ,obj ,@args)))))
+                   #;
+                   (string-append so-far
+                                  (format "~a(~a);"
+                                                 obj
+                                                 (apply string-append
+                                                        (map make-string (add-between args ","))))))]
     [(list 'body (list 'assign (list name) expr) more ...)
      (unparse-java `(body ,@more) (string-append so-far (format "~a = ~a;" name (unparse-java `(expression ,@expr)))))]
     [(list 'body (list 'assign+ (list name) expr) more ...)
@@ -352,15 +367,26 @@
      (unparse-java `(body ,@more)
                    (string-append so-far (format "return ~a;"
                                                  (unparse-java `(expression ,expr)))))]
-    [(list 'expression (list 'make type (list args ...)))
+    [(list 'expression (list 'make type args ...))
      (string-append so-far (format "new ~a(~a)" type
                                    (apply string-append
                                           (add-between
                                             (for/list ([arg args]) (unparse-java `(expression ,arg)))
                                             ",")))
                                             )]
+
     [(list 'body (list 'var type name expr) more ...)
-     (unparse-java `(body ,@more) (string-append so-far (format "~a ~a = ~a;" type name (unparse-java `(expression ,expr)))))]
+     (unparse-java `(body ,@more)
+                   (string-append so-far
+                                  (format "~a ~a = ~a;"
+                                          type name
+                                          (unparse-java `(expression ,expr)))))]
+
+    [(list 'expression (list 'lookup obj expr))
+     (string-append so-far (format "~a[~a]"
+                                   (unparse-java `(expression ,obj))
+                                   (unparse-java `(expression ,expr))))]
+
     [(list 'expression (and (or (? symbol?)
                                 (? number?)
                                 (? string?))
@@ -384,13 +410,32 @@
      (string-append so-far (format "!(~a)" (unparse-java `(expression ,@more))))]
     [(list 'expression (list 'op op a b))
      (string-append so-far (format "~a ~a ~a"
-                                   (unparse-java `(expression a))
+                                   (unparse-java `(expression ,a))
                                    op
-                                   (unparse-java `(expression b))))]
+                                   (unparse-java `(expression ,b))))]
     [(list 'expression (list 'cast (list class) expr ignore))
-     (string-append so-far (format "(~a) ~a" class (unparse-java `(expression expr))))]
+     (string-append so-far (format "(~a) ~a" class (unparse-java `(expression ,expr))))]
+
+    [(list 'expression (list 'call function args ...))
+     (string-append so-far (format "~a(~a)"
+                                   (unparse-java `(expression ,function))
+                                   (apply string-append
+                                          (add-between (for/list ([arg args])
+                                                         (unparse-java `(expression ,arg)))
+                                                       ","
+                                                       ))))]
+
+    [(list 'expression (list 'dot (list what) (list field)))
+     (string-append so-far (format "~a.~a" what field))]
+
+    #;
+    [(list 'expression (list '#%brackets expression ...))
+     (string-append so-far (format "[~a]" (unparse-java `(expression ,@expression))))]
+
+    #;
     [(list 'expression (list 'call (and (? symbol?) obj) method))
      (string-append so-far (format "~a.~a()" obj method))]
+    #;
     [(list 'expression (list 'call (list 'dot (list what) (list expr)) args ...))
      (string-append so-far (format "~a.~a(~a)"
                                    what
@@ -442,6 +487,7 @@
 (parse-java (java-read-syntax "1 + new foo() * 4"))
 |#
 
+#;
 (parse-java (with-input-from-file "tests/Token.java"
                                   (lambda () (honu-read-syntax))))
 
