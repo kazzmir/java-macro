@@ -26,31 +26,19 @@
 (define (operator-binary-transformer operator)
   (case operator
     [(=) (lambda (left right)
-           (parsed `(assign ,left ,right)))]
+           (parsed `(assign ,@left ,@right)))]
     [(+=) (lambda (left right)
-            (parsed `(assign+ ,left ,right)))]
-    [(!=) (lambda (left right)
-            (parsed `(op != ,left ,right)))]
-    [(==) (lambda (left right)
-            (parsed `(op == ,left ,right)))]
+            (parsed `(assign+ ,@left ,@right)))]
+    [(!= == < - + *) (lambda (left right)
+            (parsed `(op ,operator ,@left ,@right)))]
     [(%dot) (lambda (left right)
-              (parsed `(dot ,left ,right)))]
-    [(<) (lambda (left right)
-           (parsed `(op < ,left ,right)))]
-    [(-) (lambda (left right)
-           (parsed `(op - ,left ,right)))]
-    [(+) (lambda (left right)
-           (parsed `(op + ,left ,right)))]
-    [(*) (lambda (left right)
-           (parsed `(op * ,left ,right)))]
+              (parsed `(dot ,@left ,@right)))]
     [else #f]))
 
 (define (operator-unary-transformer operator)
   (case operator
-    [(!) (lambda (left)
-           (parsed `(not ,left)))]
-    [(-) (lambda (left)
-           (parsed `(- ,left)))]
+    [(! -) (lambda (left)
+           (parsed `(unary-op ,operator ,@left)))]
     [else #f]))
 
 (define function-call-precedence 99)
@@ -78,8 +66,8 @@
                        (parse-expression more))
         (loop (cons parsed all) unparsed)))))
 
-(define debug printf)
-;; (define-syntax-rule (debug x ...) (void))
+;; (define debug printf)
+(define-syntax-rule (debug x ...) (void))
 
 (define (parse-args args)
   ;; parse an expression, then maybe a comma, then repeat
@@ -323,7 +311,10 @@
     [(number? what) (number->string what)]
     [(string what) what]))
 
-(define (unparse-java input [so-far ""])
+(define (add-tab tab)
+  (string-append tab "   "))
+
+(define (unparse-java input tabs [so-far ""])
   (define (package-name what)
     (define strings
       (reverse 
@@ -337,55 +328,77 @@
   (debug "Unparse ~a\n" (pretty-format input))
   (match input
     [(list (list 'package name ...) more ...)
-     (unparse-java more (string-append so-far (format "package ~a;" (package-name name))))]
+     (unparse-java more tabs (string-append so-far (format "package ~a;" (package-name name))))]
     [(list (list 'import name ...) more ...)
-     (unparse-java more (string-append so-far (format "\nimport ~a;" (package-name name))))]
+     (unparse-java more tabs (string-append so-far (format "\nimport ~a;" (package-name name))))]
     [(list (list 'class name body ...) more ...)
-     (unparse-java more (string-append so-far (format "\nclass ~a{ ~a }" name (unparse-java body))))]
+     (unparse-java more tabs (string-append so-far (format "\nclass ~a{\n~a\n~a}" name (unparse-java body (add-tab tabs)) tabs)))]
     [(list (list 'var name type) more ...)
-     (unparse-java more (string-append so-far (format "\n\tprivate ~a ~a;" type name)))]
+     (unparse-java more tabs (string-append so-far (format "\n~aprivate ~a ~a;" tabs type name)))]
     [(list (list 'constructor name body) more ...)
-     (unparse-java more (string-append so-far (format "\n\tpublic ~a(){\n~a\n}" name (unparse-java body))))]
+     (unparse-java more tabs
+                   (string-append so-far
+                                  (format "\n~apublic ~a(){\n~a\n~a}"
+                                          tabs name
+                                          (unparse-java body (add-tab tabs))
+                                          tabs)))]
     [(list (list 'method name type body) more ...)
-     (unparse-java more (string-append so-far (format "\n\tpublic ~a ~a(){\n~a\n}" type name (unparse-java body))))]
+     (unparse-java more tabs (string-append so-far (format "\n~apublic ~a ~a(){\n~a\n~a}" tabs type name (unparse-java body (add-tab tabs)) tabs)))]
     [(list 'body (list 'call obj args ...) more ...)
      (unparse-java `(body ,@more)
+                   tabs
                    (string-append so-far
-                                  (format "~a;"
-                                          (unparse-java `(expression (call ,obj ,@args)))))
-                   #;
-                   (string-append so-far
-                                  (format "~a(~a);"
-                                                 obj
-                                                 (apply string-append
-                                                        (map make-string (add-between args ","))))))]
-    [(list 'body (list 'assign (list name) expr) more ...)
-     (unparse-java `(body ,@more) (string-append so-far (format "~a = ~a;" name (unparse-java `(expression ,@expr)))))]
-    [(list 'body (list 'assign+ (list name) expr) more ...)
-     (unparse-java `(body ,@more) (string-append so-far (format "~a += ~a;" name (unparse-java `(expression ,@expr)))))]
+                                  (format "~a~a;\n"
+                                          tabs
+                                          (unparse-java `(expression (call ,obj ,@args)) tabs))))]
+    [(list 'body (list 'assign name expr) more ...)
+     (unparse-java `(body ,@more) tabs
+                   (string-append so-far (format "~a~a = ~a;\n" tabs
+                                                 (unparse-java `(expression ,name) tabs)
+                                                 (unparse-java `(expression ,expr) tabs))))]
+    [(list 'body (list 'assign+ name expr) more ...)
+     (unparse-java `(body ,@more) tabs
+                   (string-append so-far (format "~a~a += ~a;\n"
+                                                 tabs
+                                                 (unparse-java `(expression ,name) tabs)
+                                                 (unparse-java `(expression ,expr) tabs))))]
     [(list 'body (list 'return expr) more ...)
      (unparse-java `(body ,@more)
-                   (string-append so-far (format "return ~a;"
-                                                 (unparse-java `(expression ,expr)))))]
+                   tabs
+                   (string-append so-far (format "~areturn ~a;"
+                                                 tabs
+                                                 (unparse-java `(expression ,expr) tabs))))]
     [(list 'expression (list 'make type args ...))
      (string-append so-far (format "new ~a(~a)" type
                                    (apply string-append
                                           (add-between
-                                            (for/list ([arg args]) (unparse-java `(expression ,arg)))
+                                            (for/list ([arg args]) (unparse-java `(expression ,arg) tabs))
                                             ",")))
                                             )]
 
     [(list 'body (list 'var type name expr) more ...)
      (unparse-java `(body ,@more)
+                   tabs
                    (string-append so-far
-                                  (format "~a ~a = ~a;"
+                                  (format "~a~a ~a = ~a;\n"
+                                          tabs
                                           type name
-                                          (unparse-java `(expression ,expr)))))]
+                                          (unparse-java `(expression ,expr) tabs))))]
+
+    [(list 'expression (list 'var type name expr))
+     (string-append so-far
+                    (format "~a~a ~a = ~a"
+                            tabs
+                            type name
+                            (unparse-java `(expression ,expr) tabs)))]
+
+    [(list 'expression (list 'assign+ name expr))
+     (string-append so-far (format "~a += ~a" name (unparse-java `(expression ,expr) tabs)))]
 
     [(list 'expression (list 'lookup obj expr))
      (string-append so-far (format "~a[~a]"
-                                   (unparse-java `(expression ,obj))
-                                   (unparse-java `(expression ,expr))))]
+                                   (unparse-java `(expression ,obj) tabs)
+                                   (unparse-java `(expression ,expr) tabs)))]
 
     [(list 'expression (and (or (? symbol?)
                                 (? number?)
@@ -394,39 +407,57 @@
      (string-append so-far (format "~a" id))]
     
     [(list 'body (list 'if condition then) more ...)
-     (unparse-java `(body ,@more) (string-append (format "\nif (~a){\n~a\n}" (unparse-java `(expression ,condition)) (unparse-java then))))]
+     (unparse-java `(body ,@more) tabs (string-append
+                                         (format "\n~aif (~a){\n~a\n~a}\n"
+                                                 tabs
+                                                 (unparse-java `(expression ,condition) tabs)
+                                                 (unparse-java then (add-tab tabs))
+                                                 tabs)))]
 
     [(list 'body (list 'if condition then else) more ...)
-     (unparse-java `(body ,@more) (string-append (format "\nif (~a){\n~a\n} else {\n~a\n}"
-                                                         (unparse-java `(expression ,condition))
-                                                         (unparse-java then)
-                                                         (unparse-java else)
-                                                         )))]
+     (unparse-java `(body ,@more) tabs
+                   (string-append (format "\n~aif (~a){\n~a\n~a} else {\n~a\n~a}\n"
+                                          tabs
+                                          (unparse-java `(expression ,condition) tabs)
+                                          (unparse-java then (add-tab tabs))
+                                          tabs
+                                          (unparse-java else (add-tab tabs))
+                                          tabs
+                                          )))]
 
     [(list 'body (list 'for init condition rest body) more ...)
-     (unparse-java `(body ,@more) (string-append (format "\nfor (~a; ~a; ~a){\n~a\n}" (unparse-java `(body ,@init)) (unparse-java `(expression ,@condition)) (unparse-java `(expression ,@rest)) (unparse-java body))))]
+     (unparse-java `(body ,@more) tabs 
+                   (string-append (format "\n~afor (~a; ~a; ~a){\n~a\n~a}\n"
+                                          tabs
+                                          (unparse-java `(expression ,@init) "")
+                                          (unparse-java `(expression ,@condition) "")
+                                          (unparse-java `(expression ,@rest) "")
+                                          (unparse-java body (add-tab tabs))
+                                          tabs)))]
 
     [(list 'expression (list 'not more))
-     (string-append so-far (format "!(~a)" (unparse-java `(expression ,@more))))]
+     (string-append so-far (format "!(~a)" (unparse-java `(expression ,@more) tabs)))]
+    [(list 'expression (list 'unary-op op x))
+     (string-append so-far (format "~a~a" op (unparse-java `(expression ,x) tabs)))]
     [(list 'expression (list 'op op a b))
      (string-append so-far (format "~a ~a ~a"
-                                   (unparse-java `(expression ,a))
+                                   (unparse-java `(expression ,a) tabs)
                                    op
-                                   (unparse-java `(expression ,b))))]
+                                   (unparse-java `(expression ,b) tabs)))]
     [(list 'expression (list 'cast (list class) expr ignore))
-     (string-append so-far (format "(~a) ~a" class (unparse-java `(expression ,expr))))]
+     (string-append so-far (format "(~a) ~a" class (unparse-java `(expression ,expr) tabs)))]
 
     [(list 'expression (list 'call function args ...))
      (string-append so-far (format "~a(~a)"
-                                   (unparse-java `(expression ,function))
+                                   (unparse-java `(expression ,function) tabs)
                                    (apply string-append
                                           (add-between (for/list ([arg args])
-                                                         (unparse-java `(expression ,arg)))
+                                                         (unparse-java `(expression ,arg) tabs))
                                                        ","
                                                        ))))]
 
-    [(list 'expression (list 'dot (list what) (list field)))
-     (string-append so-far (format "~a.~a" what field))]
+    [(list 'expression (list 'dot what field))
+     (string-append so-far (format "~a.~a" (unparse-java `(expression ,what) tabs) field))]
 
     #;
     [(list 'expression (list '#%brackets expression ...))
@@ -494,8 +525,9 @@
 (printf "~a\n"
         (unparse-java 
           (remove-parsed
-          (parse-java (with-input-from-file "tests/Token.java"
-                                    (lambda () (honu-read-syntax)))))))
+            (parse-java (with-input-from-file "tests/Token.java"
+                                              (lambda () (honu-read-syntax)))))
+          ""))
 
 ;; the honu framework is
 ;; 1. read into s-expressions

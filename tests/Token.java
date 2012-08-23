@@ -143,7 +143,7 @@ public class Token{
 
 	private Token readIndex(int index){
 		Iterator it = this.iterator();
-		for (int i = 0; i < index; i++){
+		for (int i = 0; i < index; i += 1){
 			it.next();
 		}
 		return (Token) it.next();
@@ -172,7 +172,7 @@ public class Token{
 
 	public Token addToken( String[] args ){
 		Token t = new Token( this );
-		for ( int i = 0; i < args.length; i++ ){
+		for ( int i = 0; i < args.length; i += 1){
 			t.addToken( new Token( args[ i ] ) );
 		}
 		return addToken( t );
@@ -188,7 +188,7 @@ public class Token{
 		}
 		StringBuffer b = new StringBuffer();
 		b.append( "\n" );
-		for ( int i = 0; i < spaces; i++ ){
+		for ( int i = 0; i < spaces; i += 1){
 			b.append( " " );
 		}
 		b.append( "(" + getName() );	
