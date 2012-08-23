@@ -343,7 +343,11 @@
                                           (unparse-java body (add-tab tabs))
                                           tabs)))]
     [(list (list 'method name type body) more ...)
-     (unparse-java more tabs (string-append so-far (format "\n~apublic ~a ~a(){\n~a\n~a}" tabs type name (unparse-java body (add-tab tabs)) tabs)))]
+     (unparse-java more tabs
+                   (string-append so-far
+                                  (format "\n~apublic ~a ~a(){\n~a\n~a}\n"
+                                          tabs type name
+                                          (unparse-java body (add-tab tabs)) tabs)))]
     [(list 'body (list 'call obj args ...) more ...)
      (unparse-java `(body ,@more)
                    tabs
@@ -522,12 +526,13 @@
 (parse-java (with-input-from-file "tests/Token.java"
                                   (lambda () (honu-read-syntax))))
 
-(printf "~a\n"
-        (unparse-java 
-          (remove-parsed
-            (parse-java (with-input-from-file "tests/Token.java"
-                                              (lambda () (honu-read-syntax)))))
-          ""))
+(printf
+  "~a\n"
+  (unparse-java 
+    (remove-parsed
+      (parse-java (with-input-from-file "tests/Token.java"
+                                        (lambda () (honu-read-syntax)))))
+    ""))
 
 ;; the honu framework is
 ;; 1. read into s-expressions
