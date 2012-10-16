@@ -9,9 +9,7 @@
       (honu-read-syntax))))
 
 (struct parsed (data) #:transparent)
-
-(define (operator? operator)
-  (member operator '(+ - * / %dot = == ! < += !=)))
+(struct operator (precedence association binary unary postfix?))
 
 (define (id? x)
   (and (symbol? x)
@@ -19,10 +17,19 @@
                 (member x '(= #%parens #%braces #%brackets < >))
                 (member x '(public private protected))))))
 
-(define (operator-association operator)
-  (case operator
-    [(+ - * / %dot = == ! < += !=) 'left]))
+(define (binary-operator precedence association binary [unary #f] [postfix? #f])
+  (operator precedence association binary unary postfix?))
 
+(define java-+ (binary-operator 1 'left (lambda (left right)
+				   `(op ,+ ,@left ,@right))))
+(define java-- (binary-operator 1 'left (lambda (left right)
+				   `(op ,- ,@left ,@right))))
+(define java-* (binary-operator 2 'left (lambda (left right)
+				   `(op ,* ,@left ,@right))))
+(define java-/ (binary-operator 2 'left (lambda (left right)
+				   `(op ,/ ,@left ,@right))))
+
+#;
 (define (operator-binary-transformer operator)
   (case operator
     [(=) (lambda (left right)
@@ -42,6 +49,7 @@
     [else #f]))
 
 (define function-call-precedence 99)
+#;
 (define (operator-precedence operator)
   (case operator
     [(= +=) 0.1]
@@ -54,16 +62,16 @@
     [else (error 'precedence "unknown precedence for operator ~a" operator)]
     ))
 
-(define (parse-all stuff)
+(define (parse-all stuff environment)
   #;
-  (parse-expression stuff)
+  (enforest-java stuff)
   (let loop ([all '()]
              [more stuff])
     (if (or (null? more) (not more))
       (reverse all)
       (let ()
         (define-values (parsed unparsed)
-                       (parse-expression more))
+                       (enforest-java more environment))
         (loop (cons parsed all) unparsed)))))
 
 ;; (define debug printf)
@@ -73,7 +81,7 @@
   ;; parse an expression, then maybe a comma, then repeat
   (let loop ([all '()]
              [rest args])
-    (define-values (expr1 more) (parse-expression rest))
+    (define-values (expr1 more) (enforest-java rest))
     (if expr1
       (loop (cons expr1 all)
             (match more
@@ -81,7 +89,7 @@
               [else more]))
       (reverse all))))
 
-(define (parse-expression input)
+(define (enforest-java input environment)
   (define (parse stream precedence left current)
     (debug "Parsing ~a current ~a\n" stream current)
     (match stream
@@ -99,13 +107,13 @@
          (values (left #f) stream))]
       [(list (list '%semicolon inner ...) more ...)
        ;; there should only be one statement here so just take it out
-       (values (first (parse-all inner)) more)]
+       (values (first (parse-all inner environment)) more)]
 
       [(list (and (? operator?) operator) rest ...)
        (define new-precedence (operator-precedence operator))
        (define association (operator-association operator))
-       (define binary-transformer (operator-binary-transformer operator))
-       (define unary-transformer (operator-unary-transformer operator))
+       (define binary-transformer (operator-binary operator))
+       (define unary-transformer (operator-unary operator))
        (define higher
          (case association
            [(left) >]
@@ -115,11 +123,11 @@
          (let-values ([(parsed unparsed)
                        (parse rest new-precedence
                               (lambda (stuff)
-                                (define right (parse-all stuff))
+                                (define right (parse-all stuff environment))
                                 (define output
                                   (if current
                                     (if binary-transformer
-                                      (binary-transformer (parse-all current) right)
+                                      (binary-transformer (parse-all current environment) right)
                                       (error 'binary "cannot be used as a binary operator in ~a" operator))
                                     (if unary-transformer
                                       (unary-transformer right)
@@ -139,60 +147,60 @@
        (if current
          (error 'parse "cannot have anything next to a for loop ~a" current)
          (let ()
-           (define init (parse-all init-code))
-           (define until (parse-all until-code))
-           (define update (parse-all update-code))
-           (define body (parse-all body-code))
+           (define init (parse-all init-code environment))
+           (define until (parse-all until-code environment))
+           (define update (parse-all update-code environment))
+           (define body (parse-all body-code environment))
            (values (parsed `(for ,init ,until ,update ,@body)) rest)))]
 
       [(list '#%braces code ...)
-       (define inner (parse-all code))
+       (define inner (parse-all code environment))
        (values (parsed `(body ,@inner)) #f)]
 
       [(list 'if (list '#%parens condition-code ...) (list '#%braces then-code ...) 'else (list '#%braces else-code ...) more ...)
        (debug "If with an else\n")
-       (define condition (first (parse-all condition-code)))
-       (define then (parse-all then-code))
-       (define else (parse-all else-code))
+       (define condition (first (parse-all condition-code environment)))
+       (define then (parse-all then-code environment))
+       (define else (parse-all else-code environment))
        (values `(if ,condition (body ,@then) (body ,@else)) more)]
 
       [(list 'if (list '#%parens condition-code ...) (list '#%braces then-code ...) more ...)
        (debug "If by itself\n")
-       (define condition (first (parse-all condition-code)))
-       (define then (parse-all then-code))
+       (define condition (first (parse-all condition-code environment)))
+       (define then (parse-all then-code environment))
        (values `(if ,condition (body ,@then)) more)]
 
       [(list 'return rest ...)
-       (define returned (first (parse-all rest)))
+       (define returned (first (parse-all rest environment)))
        (values `(return ,returned) #f)]
 
       ;; Type name
       [(list (and (? id?) type) (and (? id?) name))
        (if current
-         (error 'parse-expression "cannot have anything next to a variable definition ~a" current)
+         (error 'enforest-java "cannot have anything next to a variable definition ~a" current)
          (values `(var ,type ,name) #f))]
 
       ;; List<Foo> x = ...
       [(list (and (? id?) type) '< (and (? id?) generic) '> (and (? id?) name) '= right-side ...)
        (if current
-         (error 'parse-expression "cannot have anything next to a variable definition ~a" current)
+         (error 'enforest-java "cannot have anything next to a variable definition ~a" current)
          (let ()
-           (define right (first (parse-all right-side)))
+           (define right (first (parse-all right-side environment)))
            (values `(var ,type ,name ,right) #f)))]
 
       ;; List x = ...
       [(list (and (? id?) type) (and (? id?) name) '= right-side ...)
        (if current
-         (error 'parse-expression "cannot have anything next to a variable definition ~a" current)
+         (error 'enforest-java "cannot have anything next to a variable definition ~a" current)
          (let ()
-           (define right (first (parse-all right-side)))
+           (define right (first (parse-all right-side environment)))
            (values `(var ,type ,name ,right) #f)))]
 
       [(list (list '#%brackets expr ...) more ...)
        (if (not current)
-         (error 'parse-expression "must have something next to brackets")
+         (error 'enforest-java "must have something next to brackets")
          (let ()
-           (define inside (first (parse-all expr)))
+           (define inside (first (parse-all expr environment)))
            (parse more precedence left (parsed `(lookup ,current ,inside)))))]
 
       ;; new foo()
@@ -218,14 +226,14 @@
              (parse more precedence left (parsed `(call ,current ,@parsed-args)))))
          ;; not a function call, just parenthesizing an expression
          (let ()
-           (define inner (parse-all args))
+           (define inner (parse-all args environment))
            (parse more precedence left inner)))]
 
       [(list (and (? id?) x) rest ...)
        (debug "Parse id ~a\n" x)
        (if current
          (let ()
-           (define-values (right more) (parse-expression stream))
+           (define-values (right more) (enforest-java stream environment))
            (parse more precedence (lambda (x) (parsed `(cast ,current ,right ,x))) #f))
          (parse rest precedence left (parsed x)))
        #;
@@ -246,10 +254,10 @@
 
   (parse input 0 (lambda (x) x) #f))
 
-(define (parse-body body)
-  (parse-all body))
+(define (parse-body body environment)
+  (parse-all body environment))
 
-(define (parse-class-body body)
+(define (parse-class-body body environment)
   (match body
     [(list (list '%semicolon (or 'public 'private 'protected)
                  (and (? symbol?) type) (and (? symbol?) var))
@@ -258,26 +266,26 @@
     [(list (or 'public 'private) (and (? id?) id) (list '#%parens args ...)
            (list '#%braces body ...)
            more ...)
-     (define code (parse-body body))
+     (define code (parse-body body environment))
      (debug "Constructor body ~a\n" (pretty-format code))
      (values `(constructor ,id (body ,@code)) more)]
     [(list (or 'public 'private) (and (? id?) type)
            (and (? id?) id) (list '#%parens args ...)
            (list '#%braces body ...)
            more ...)
-     (define code (parse-body body))
+     (define code (parse-body body environment))
      (values `(method ,id ,type (body ,@code)) more)]
     [(list (or 'public 'private)
            (and (? symbol?) type) '< (not '>) ... '>
            (and (? symbol?) id) (list '#%parens args ...)
            (list '#%braces body ...)
            more ...)
-     (define code (parse-body body))
+     (define code (parse-body body environment))
      (values `(method ,id ,type (body ,@code)) more)]
     [else (error 'parse-class-body "can't parse ~a" body)]
     ))
 
-(define (parse-class class class-body)
+(define (parse-class class class-body environment)
   (define class-stuff
     (let loop ([all '()]
                [more class-body])
@@ -285,11 +293,11 @@
         (reverse all)
         (let ()
           (define-values (parsed unparsed)
-                         (parse-class-body more))
+                         (parse-class-body more environment))
           (loop (cons parsed all) unparsed)))))
   `(class ,class ,@class-stuff))
 
-(define (parse-top-level input)
+(define (parse-top-level input environment)
   (match input
     [(list (list '%semicolon 'package rest ...)
            more ...)
@@ -299,7 +307,7 @@
      (values `(import ,@rest) more)]
     [(list 'public 'class (and (? symbol?) class) (list '#%braces class-body ...)
            more ...)
-     (values (parse-class class class-body)
+     (values (parse-class class class-body environment)
              more)]
     ))
 
@@ -487,10 +495,55 @@
     ;; [else so-far]
     ))
 
+(define (make-environment)
+  (hash))
+
+(define-syntax-rule (add-binding! environment symbol value)
+		    (set! environment (hash-set environment 'symbol value)))
+
+(struct macro (function))
+(define-syntax-rule (define-macro (name arg) body ...)
+		    (define name (macro (lambda (arg) body ...))))
+
+(define (environment-value environment name)
+  (hash-ref environment name (lambda () #f)))
+
+(define-macro (java-unparsed-top stx environment)
+  (parse-top-level stx environment))
+
+(define (is-macro? id environment)
+  (define value (environment-value environment id))
+  (and value (macro? value)))
+
+(define (base-java-environment)
+  (define environment (make-environment))
+  (add-binding! environment + java-+)
+  (add-binding! environment - java-+)
+  (add-binding! environment * java-*)
+  (add-binding! environment / java-/)
+  (add-binding! environment java-unparsed-top java-unparsed-top)
+  environment)
+
+(define (update-bindings environment code)
+  environment)
+
+(define (expand-java environment code)
+  (match code
+     [(list (and symbol? (? (lambda (x) (is-macro? x environment))) id) rest ...)
+      (define macro (environment-value environment id))
+      (define output ((macro-function macro) environment rest))
+      (expand-java (update-bindings environment output) output)]
+     ))
+
+(define (start-expand-java input)
+  (define environment (base-java-environment))
+  (define code `(java-unparsed-top ,@input))
+  (expand-java environment code))
+
 (define (parse-java input)
   #|
   (define-values (parsed unparsed)
-                 (parse-expression (syntax->datum input)))
+                 (enforest-java (syntax->datum input)))
   (when unparsed
     (error 'parse-java "unparsed ~a" unparsed))
   parsed
