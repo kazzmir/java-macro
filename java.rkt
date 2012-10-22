@@ -3,6 +3,21 @@
 (require honu/core/read
          racket/pretty)
 
+;; java expand ast
+;;
+;; statement = 
+;; (class name superclass (interface ...)
+;;   (field name type expr)
+;;   (method name (arg ...) body:statement ...))
+;; 
+;; (var name type expr)
+;; expr
+;;
+;; expr = ...
+;; (call expr name arg:expr ...)
+;; (store expr expr)
+;; (if expr expr expr)
+
 (define (java-read-syntax input)
   (with-input-from-string input
     (lambda ()
@@ -10,6 +25,29 @@
 
 (struct parsed (data) #:transparent)
 (struct operator (precedence association binary unary postfix?))
+(struct java-class (inside))
+(struct java-macro (function))
+
+(define-syntax-rule (define-java-macro (name arg ...) body ...)
+                    (define name (java-macro (lambda (arg ...) body ...))))
+
+(define (environment-value environment name)
+  (hash-ref environment name (lambda () #f)))
+
+(define-java-macro (create-java-macro stx)
+  (match stx
+    [(list id (list '#%parens literal ...)
+           (list '#%braces pattern ...)
+           (list '#%braces body ...)
+     rest ...)
+     (define macro (java-macro (lambda (stx)
+                                 (values `(4 + ,stx) '()))))
+     (values (parsed `(macro ,id ,macro))
+             rest)]))
+      
+(define (is-java-macro? name environment)
+  (debug "Java macro ~a in ~a? ~a\n" name environment (java-macro? (environment-value environment name)))
+  (java-macro? (environment-value environment name)))
 
 (define (id? x)
   (and (symbol? x)
@@ -74,14 +112,14 @@
                        (enforest-java more environment))
         (loop (cons parsed all) unparsed)))))
 
-;; (define debug printf)
-(define-syntax-rule (debug x ...) (void))
+(define debug printf)
+; (define-syntax-rule (debug x ...) (void))
 
-(define (parse-args args)
+(define (parse-args args environment)
   ;; parse an expression, then maybe a comma, then repeat
   (let loop ([all '()]
              [rest args])
-    (define-values (expr1 more) (enforest-java rest))
+    (define-values (expr1 more) (enforest-java rest environment))
     (if expr1
       (loop (cons expr1 all)
             (match more
@@ -100,6 +138,13 @@
        (if current
          (values (left current) stream)
          (parse rest precedence left x))]
+      [(list (and (? (lambda (x) (is-java-macro? x environment)) macro)) rest ...)
+       (if current
+         (values (left current) stream)
+         (let ()
+           (define function (java-macro-function (environment-value environment macro)))
+           (define-values (parsed unparsed) (function rest))
+           (values parsed unparsed)))]
       [(list) (values (left current) #f)]
       [(list 'honu-comma rest ...)
        (if current
@@ -209,7 +254,7 @@
        (if current
          (values (left current) stream)
          (let ()
-           (define parsed-args (parse-args args))
+           (define parsed-args (parse-args args environment))
            (define output (parsed `(make ,constructor ,@parsed-args)))
            (parse rest precedence left output)))]
 
@@ -219,10 +264,10 @@
          (if (> precedence function-call-precedence)
            (let ()
              (define function (left current))
-             (define parsed-args (parse-args args))
+             (define parsed-args (parse-args args environment))
              (parse more function-call-precedence (lambda (x) x) (parsed `(call ,function ,@parsed-args))))
            (let ()
-             (define parsed-args (parse-args args))
+             (define parsed-args (parse-args args environment))
              (parse more precedence left (parsed `(call ,current ,@parsed-args)))))
          ;; not a function call, just parenthesizing an expression
          (let ()
@@ -266,9 +311,11 @@
     [(list (or 'public 'private) (and (? id?) id) (list '#%parens args ...)
            (list '#%braces body ...)
            more ...)
+     #;
      (define code (parse-body body environment))
+     #;
      (debug "Constructor body ~a\n" (pretty-format code))
-     (values `(constructor ,id (body ,@code)) more)]
+     (values (parsed `(constructor ,id (java-unparsed-body ,@body))) more)]
     [(list (or 'public 'private) (and (? id?) type)
            (and (? id?) id) (list '#%parens args ...)
            (list '#%braces body ...)
@@ -295,7 +342,7 @@
           (define-values (parsed unparsed)
                          (parse-class-body more environment))
           (loop (cons parsed all) unparsed)))))
-  `(class ,class ,@class-stuff))
+  (parsed `(class ,class ,@class-stuff)))
 
 (define (parse-top-level input environment)
   (match input
@@ -335,6 +382,7 @@
     (apply string-append strings))
   (debug "Unparse ~a\n" (pretty-format input))
   (match input
+    [(list (list)) so-far]
     [(list (list 'package name ...) more ...)
      (unparse-java more tabs (string-append so-far (format "package ~a;" (package-name name))))]
     [(list (list 'import name ...) more ...)
@@ -496,23 +544,33 @@
     ))
 
 (define (make-environment)
-  (hash))
+  (make-hash))
+
+(define (copy-environment environment)
+  (hash-copy environment))
 
 (define-syntax-rule (add-binding! environment symbol value)
-		    (set! environment (hash-set environment 'symbol value)))
+                    (hash-set! environment 'symbol value))
 
 (struct macro (function))
-(define-syntax-rule (define-macro (name arg) body ...)
-		    (define name (macro (lambda (arg) body ...))))
+(define-syntax-rule (define-macro (name arg ...) body ...)
+                    (define name (macro (lambda (arg ...) body ...))))
 
-(define (environment-value environment name)
-  (hash-ref environment name (lambda () #f)))
+(define-macro (java-unparsed-body stx environment)
+  (match stx
+    [(list) '()]
+    [else (let-values ([(parsed unparsed) (enforest-java stx environment)])
+            `(,parsed (java-unparsed-body ,@unparsed)))]))
 
 (define-macro (java-unparsed-top stx environment)
-  (parse-top-level stx environment))
+  (match stx
+    [(list) '()]
+    [else (let-values ([(parsed unparsed) (parse-top-level stx environment)])
+            `(,parsed (java-unparsed-top ,@unparsed)))]))
 
 (define (is-macro? id environment)
   (define value (environment-value environment id))
+  (debug "Macro? ~a in ~a ~a\n" id environment (macro? value))
   (and value (macro? value)))
 
 (define (base-java-environment)
@@ -521,18 +579,77 @@
   (add-binding! environment - java-+)
   (add-binding! environment * java-*)
   (add-binding! environment / java-/)
+  (add-binding! environment macro create-java-macro)
   (add-binding! environment java-unparsed-top java-unparsed-top)
+  (add-binding! environment java-unparsed-body java-unparsed-body)
   environment)
 
-(define (update-bindings environment code)
-  environment)
+(define (update-bindings environment name value)
+  (define new (copy-environment environment))
+  (hash-set! new name value)
+  new)
 
 (define (expand-java environment code)
+  (debug "Expand ~a\n" code)
   (match code
      [(list (and symbol? (? (lambda (x) (is-macro? x environment))) id) rest ...)
       (define macro (environment-value environment id))
-      (define output ((macro-function macro) environment rest))
-      (expand-java (update-bindings environment output) output)]
+      (define output ((macro-function macro) rest environment))
+      (expand-java environment output)]
+     [(list (list (and symbol? (? (lambda (x) (is-macro? x environment))) id) rest ...)
+            more ...)
+      (define macro (environment-value environment id))
+      (define output ((macro-function macro) rest environment))
+      (define front (expand-java environment output))
+      (expand-java environment (cons front more))]
+     [(list (struct parsed (inside)) rest ...)
+      (expand-java environment (cons inside rest))]
+     [(list (list 'class name class-stuff ...) rest ...)
+      (define (expand-class environment stuff)
+        (define class-environment (copy-environment environment))
+        (for/list ([stuff stuff])
+          (define (parse what)
+            (match what
+              [(list 'var rest ...) (expand-java class-environment (list what))]
+              [(struct parsed (inside)) (parse inside)]
+              [(list 'constructor name body)
+               (define body* (expand-java (copy-environment class-environment)
+                                          body))
+               `(constructor ,name ,@body*)]
+              [else (error 'class "unknown form ~a" stuff)]))
+          (parse stuff)))
+
+      (define stuff* (expand-class environment class-stuff))
+      (define new-environment (update-bindings environment name (java-class stuff*)))
+      (define rest* (expand-java new-environment rest))
+      `((class ,name ,stuff*) ,@rest*)]
+     [(list (list 'var name type stuff ...) rest ...)
+      (define stuff* (expand-java environment stuff))
+      (define new-environment (update-bindings environment name stuff*))
+      (define rest* (expand-java new-environment rest))
+      `((var ,name ,type ,stuff*) ,@rest*)]
+     [(list (and x (list 'macro name macro)) rest ...)
+      (define new-environment (update-bindings environment name macro))
+      ;; macros are absent from the expanded form
+      (expand-java new-environment rest)]
+     [(list (and x (list 'call stuff ...)) rest ...)
+      (define rest* (expand-java environment rest))
+      `(,x ,@rest*)]
+     #;
+     [(list first rest ...)
+      (define first* (if (parsed? first)
+                       first
+                       (expand-java environment first)))
+      (define new-environment
+        (if (definition? first)
+          (update-bindings environment first)
+          environment))
+      (define rest* (expand-java environment rest))
+      
+      `(,first* ,@rest*)]
+     [(list) '()]
+     [(list (list)) '()]
+     [else (error 'expand-java "don't know how to expand ~a" code)]
      ))
 
 (define (start-expand-java input)
@@ -549,6 +666,7 @@
   parsed
   |#
 
+  #;
   (define out
     (let loop ([all '()]
                [more (syntax->datum input)])
@@ -557,6 +675,8 @@
         (let ()
           (define-values (parsed unparsed) (parse-top-level more))
           (loop (cons parsed all) unparsed)))))
+
+  (define out (start-expand-java input))
 
   out
     
@@ -583,8 +703,9 @@
   "~a\n"
   (unparse-java 
     (remove-parsed
-      (parse-java (with-input-from-file "tests/Token.java"
-                                        (lambda () (honu-read-syntax)))))
+      (parse-java (with-input-from-file ; "tests/Token.java"
+                                       "tests/t1.java"
+                                        (lambda () (honu-read)))))
     ""))
 
 ;; the honu framework is
