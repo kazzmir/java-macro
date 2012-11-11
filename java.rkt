@@ -96,6 +96,12 @@
 (define java-/ (binary-operator 2 'left (lambda (left right)
 				   (parsed `(op / ,@left ,@right)))))
 
+(define java-= (binary-operator 0.1 'left (lambda (left right)
+                                            (parsed `(assign ,@left ,@right)))))
+
+(define java-dot (binary-operator 100 'left (lambda (left right)
+                                              (parsed `(dot ,@left ,@right)))))
+
 #;
 (define (operator-binary-transformer operator)
   (case operator
@@ -175,14 +181,14 @@
            (list '#%braces body ...)
            more ...)
      (define code (parse-body body environment))
-     (values `(method ,id ,type (body ,@code)) more)]
+     (values `(method ,id ,type (java-unparsed-method ,@code)) more)]
     [(list (or 'public 'private)
            (and (? symbol?) type) '< (not '>) ... '>
            (and (? symbol?) id) (list '#%parens args ...)
            (list '#%braces body ...)
            more ...)
      (define code (parse-body body environment))
-     (values `(method ,id ,type (body ,@code)) more)]
+     (values `(method ,id ,type (java-unparsed-method ,@code)) more)]
     [else (error 'parse-class-body "can't parse ~a" body)]))
 
 (define (enforest-java input environment)
@@ -316,7 +322,7 @@
          (values (left current) stream)
          (let ()
            (define parsed-args (parse-args args environment))
-           (define output (parsed `(make ,constructor ,@parsed-args)))
+           (define output (parsed `(new ,constructor ,@parsed-args)))
            (parse rest precedence left output)))]
 
       [(list (list '#%parens args ...) more ...)
@@ -441,7 +447,7 @@
                    (string-append so-far
                                   (format "\n~apublic ~a ~a(){\n~a\n~a}\n"
                                           tabs type name
-                                          (unparse-java body (add-tab tabs)) tabs)))]
+                                          (unparse-java `(body ,@body) (add-tab tabs)) tabs)))]
 
     [(list 'body (list)) so-far]
 
@@ -474,7 +480,7 @@
                    (string-append so-far (format "~areturn ~a;"
                                                  tabs
                                                  (unparse-java `(expression ,expr) tabs))))]
-    [(list 'expression (list 'make type args ...))
+    [(list 'expression (list 'new type args ...))
      (string-append so-far (format "new ~a(~a)" type
                                    (apply string-append
                                           (add-between
@@ -550,6 +556,11 @@
      (unparse-java `(body ,@more)
                    tabs
                    (string-append so-far (format "~a~a;" tabs (unparse-java `(expression ,x) tabs))))]
+
+    [(list 'body first rest ...)
+     (unparse-java `(body ,@rest)
+                   tabs
+                   (string-append so-far (format "~a~a;" tabs (unparse-java `(expression ,first) tabs))))]
 
     [(list 'expression (list 'op op a b))
      (string-append so-far (format "~a ~a ~a"
@@ -631,7 +642,9 @@
               (set! unparsed '()))
             (if (parsed? parse)
               (let ([inside (remove-parsed parse)])
-                `(,inside (java-unparsed-method ,@unparsed)))
+                (if (null? unparsed)
+                  `(,inside)
+                  `(,inside (java-unparsed-method ,@unparsed))))
                 `(begin (java-unparsed-method ,@parse)
                         (java-unparsed-method ,@unparsed)))
               )]))
@@ -653,6 +666,8 @@
   (add-binding! environment - java-+)
   (add-binding! environment * java-*)
   (add-binding! environment / java-/)
+  (add-binding! environment = java-=)
+  (add-binding! environment %dot java-dot)
   (add-binding! environment macro create-java-macro)
   (add-binding! environment java-unparsed-top java-unparsed-top)
   (add-binding! environment java-unparsed-body java-unparsed-body)
@@ -668,6 +683,9 @@
   (debug "Expand ~a\n" code)
   (match code
     [(? number?) code]
+    [(? string?) code]
+    ;; should check that the symbol is bound
+    [(? symbol?) code]
      [(list (and symbol? (? (lambda (x) (is-macro? x environment))) id) rest ...)
       (define macro (environment-value environment id))
       (define output ((macro-function macro) rest environment))
@@ -679,10 +697,9 @@
               (for/list ([x x])
                 (expand-java environment x)))]
 
-     [(list (list 'class name body) rest)
+     [(list 'class name body)
       (define body* (expand-java environment body))
-      (define rest* (expand-java environment rest))
-      `((class ,name ,@body*) ,@rest*)]
+      `(class ,name ,@body*)]
 
      #;
      [(list (list (and symbol? (? (lambda (x) (is-macro? x environment))) id) rest ...)
@@ -727,38 +744,48 @@
       (define new-environment (update-bindings environment name (java-class stuff*)))
       (define rest* (expand-java new-environment rest))
       `((class ,name ,stuff*) ,@rest*)]
-     [(list (list 'constructor name stuff) rest)
-      (define stuff* (expand-java environment stuff))
-      (define rest* (expand-java environment rest))
-      `((constructor ,name ,stuff*) ,rest*)]
 
-     [(list (list 'op op left right) rest)
+     [(list 'constructor name stuff)
+      (define stuff* (expand-java environment stuff))
+      `(constructor ,name ,stuff*)]
+
+     [(list 'package stuff ...)
+      `(package ,@stuff)]
+
+     [(list 'import stuff ...) `(import ,@stuff)]
+
+     [(list 'method name type body)
+      (define body* (expand-java environment body))
+      `(method ,name ,type ,body*)]
+
+     [(list 'assign left right)
       (define left* (expand-java environment left))
       (define right* (expand-java environment right))
-      (define rest* (expand-java environment rest))
-      `((op ,op ,left* ,right*) ,@rest*)]
+      `(assign ,left* ,right*)]
 
-     [(list (list 'var name type stuff ...) rest)
+     [(list 'op op left right)
+      (define left* (expand-java environment left))
+      (define right* (expand-java environment right))
+      `(op ,op ,left* ,right*)]
+
+     [(list 'new what args ...) `(new ,what ,@args)]
+     [(list 'dot left right)
+      (define left* (expand-java environment left))
+      (define right* (expand-java environment right))
+      `(dot ,left* ,right*)]
+
+     [(list 'var name type stuff ...)
       (define stuff* (expand-java environment stuff))
-      (define new-environment (update-bindings environment name stuff*))
-      (define rest* (expand-java new-environment rest))
-      `((var ,name ,type ,stuff*) ,@rest*)]
-     [(list (and x (list 'macro name macro)) rest)
-      (define new-environment (update-bindings environment name macro))
-      ;; macros are absent from the expanded form
-      (expand-java new-environment rest)]
-     [(list (and x (list 'call stuff ...)) rest)
-      (define rest* (expand-java environment rest))
-      `(,x ,@rest*)]
-     #;
+      (add-binding! environment name 'lexical)
+      `(var ,name ,type ,stuff*)]
+
+     [(and x (list 'macro name macro))
+      (add-binding! environment name macro)]
+
+     [(and x (list 'call stuff ...)) x]
+
      [(list first rest ...)
-      (define first* (if (parsed? first)
-                       first
-                       (expand-java environment first)))
-      (define new-environment
-        (if (definition? first)
-          (update-bindings environment first)
-          environment))
+      (define first* (expand-java environment first))
       (define rest* (expand-java environment rest))
       
       `(,first* ,@rest*)]
@@ -815,12 +842,15 @@
 (parse-java (with-input-from-file "tests/Token.java"
                                   (lambda () (honu-read-syntax))))
 
+(define file (command-line
+               #:args (file) file))
+
 (printf
   "~a\n"
   (unparse-java 
     (remove-parsed
-      (parse-java (with-input-from-file ; "tests/Token.java"
-                                       "tests/t1.java"
+      (parse-java (with-input-from-file file
+                                       ; "tests/t1.java"
                                         (lambda () (honu-read)))))
     ""))
 
