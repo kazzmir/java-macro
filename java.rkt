@@ -88,13 +88,13 @@
   (operator precedence association binary unary postfix?))
 
 (define java-+ (binary-operator 1 'left (lambda (left right)
-				   (parsed `(op ,+ ,@left ,@right)))))
+				   (parsed `(op + ,@left ,@right)))))
 (define java-- (binary-operator 1 'left (lambda (left right)
-				   (parsed `(op ,- ,@left ,@right)))))
+				   (parsed `(op - ,@left ,@right)))))
 (define java-* (binary-operator 2 'left (lambda (left right)
-				   (parsed `(op ,* ,@left ,@right)))))
+				   (parsed `(op * ,@left ,@right)))))
 (define java-/ (binary-operator 2 'left (lambda (left right)
-				   (parsed `(op ,/ ,@left ,@right)))))
+				   (parsed `(op / ,@left ,@right)))))
 
 #;
 (define (operator-binary-transformer operator)
@@ -427,14 +427,14 @@
      (unparse-java more tabs (string-append so-far (format "\nimport ~a;" (package-name name))))]
     [(list (list 'class name body ...) more ...)
      (unparse-java more tabs (string-append so-far (format "\nclass ~a{\n~a\n~a}" name (unparse-java body (add-tab tabs)) tabs)))]
-    [(list (list 'var name type) more ...)
+    [(list (list 'var name type stuff) more ...)
      (unparse-java more tabs (string-append so-far (format "\n~aprivate ~a ~a;" tabs type name)))]
     [(list (list 'constructor name body) more ...)
      (unparse-java more tabs
                    (string-append so-far
                                   (format "\n~apublic ~a(){\n~a\n~a}"
                                           tabs name
-                                          (unparse-java body (add-tab tabs))
+                                          (unparse-java `(body ,@body) (add-tab tabs))
                                           tabs)))]
     [(list (list 'method name type body) more ...)
      (unparse-java more tabs
@@ -442,6 +442,14 @@
                                   (format "\n~apublic ~a ~a(){\n~a\n~a}\n"
                                           tabs type name
                                           (unparse-java body (add-tab tabs)) tabs)))]
+
+    [(list 'body (list)) so-far]
+
+    [(list 'body 'begin (list inside ...) more ...)
+     (unparse-java `(body ,@inside ,@more)
+                   tabs
+                   so-far)]
+
     [(list 'body (list 'call obj args ...) more ...)
      (unparse-java `(body ,@more)
                    tabs
@@ -537,6 +545,12 @@
      (string-append so-far (format "!(~a)" (unparse-java `(expression ,@more) tabs)))]
     [(list 'expression (list 'unary-op op x))
      (string-append so-far (format "~a~a" op (unparse-java `(expression ,x) tabs)))]
+
+    [(list 'body (and x (list 'op blah ...)) more ...)
+     (unparse-java `(body ,@more)
+                   tabs
+                   (string-append so-far (format "~a~a;" tabs (unparse-java `(expression ,x) tabs))))]
+
     [(list 'expression (list 'op op a b))
      (string-append so-far (format "~a ~a ~a"
                                    (unparse-java `(expression ,a) tabs)
@@ -660,8 +674,10 @@
       (expand-java environment output)]
 
      [(list 'begin x ...)
-      (for/list ([x x])
-        (expand-java environment x))]
+      (debug "Begin ~a\n" x)
+      `(begin ,@
+              (for/list ([x x])
+                (expand-java environment x)))]
 
      [(list (list 'class name body) rest)
       (define body* (expand-java environment body))
@@ -720,7 +736,7 @@
       (define left* (expand-java environment left))
       (define right* (expand-java environment right))
       (define rest* (expand-java environment rest))
-      `((op ,op ,left* ,right*) ,rest*)]
+      `((op ,op ,left* ,right*) ,@rest*)]
 
      [(list (list 'var name type stuff ...) rest)
       (define stuff* (expand-java environment stuff))
