@@ -84,8 +84,18 @@
                 (member x '(= #%parens #%braces #%brackets < >))
                 (member x '(public private protected))))))
 
+(define (type? x environment)
+  (and (id? x)
+       (eq? (environment-value environment x) 'type)))
+
 (define (binary-operator precedence association binary [unary #f] [postfix? #f])
   (operator precedence association binary unary postfix?))
+
+(define (unary-operator precedence unary [postfix? #f])
+  (operator precedence 'left #f unary postfix?))
+
+(define java-! (unary-operator 5 (lambda (what)
+                                   (parsed `(unary-op ! ,@what))))) 
 
 (define java-+ (binary-operator 1 'left (lambda (left right)
 				   (parsed `(op + ,@left ,@right)))))
@@ -99,8 +109,17 @@
 (define java-= (binary-operator 0.1 'left (lambda (left right)
                                             (parsed `(assign ,@left ,@right)))))
 
+(define java-+= (binary-operator 0.1 'left (lambda (left right)
+                                            (parsed `(assign+ ,@left ,@right)))))
+
 (define java-dot (binary-operator 100 'left (lambda (left right)
                                               (parsed `(dot ,@left ,@right)))))
+
+(define java-== (binary-operator 0.5 'left (lambda (left right)
+                                             (parsed `(op == ,@left ,@right)))))
+
+(define java-< (binary-operator 0.2 'left (lambda (left right)
+                                            (parsed `(op < ,@left ,@right)))))
 
 #;
 (define (operator-binary-transformer operator)
@@ -115,12 +134,14 @@
               (parsed `(dot ,@left ,@right)))]
     [else #f]))
 
+#;
 (define (operator-unary-transformer operator)
   (case operator
     [(! -) (lambda (left)
            (parsed `(unary-op ,operator ,@left)))]
     [else #f]))
 
+(define cast-precedence 10)
 (define function-call-precedence 99)
 #;
 (define (operator-precedence operator)
@@ -274,23 +295,23 @@
        (define condition (first (parse-all condition-code environment)))
        (define then (parse-all then-code environment))
        (define else (parse-all else-code environment))
-       (values `(if ,condition (body ,@then) (body ,@else)) more)]
+       (values (parsed `(if ,condition (body ,@then) (body ,@else))) more)]
 
       [(list 'if (list '#%parens condition-code ...) (list '#%braces then-code ...) more ...)
        (debug "If by itself\n")
        (define condition (first (parse-all condition-code environment)))
        (define then (parse-all then-code environment))
-       (values `(if ,condition (body ,@then)) more)]
+       (values (parsed `(if ,condition (body ,@then))) more)]
 
       [(list 'return rest ...)
        (define returned (first (parse-all rest environment)))
-       (values `(return ,returned) #f)]
+       (values (parsed `(return ,returned)) #f)]
 
       ;; Type name
       [(list (and (? id?) type) (and (? id?) name))
        (if current
          (error 'enforest-java "cannot have anything next to a variable definition ~a" current)
-         (values `(var ,type ,name) #f))]
+         (values (parsed `(var ,type ,name)) #f))]
 
       ;; List<Foo> x = ...
       [(list (and (? id?) type) '< (and (? id?) generic) '> (and (? id?) name) '= right-side ...)
@@ -298,7 +319,7 @@
          (error 'enforest-java "cannot have anything next to a variable definition ~a" current)
          (let ()
            (define right (first (parse-all right-side environment)))
-           (values `(var ,type ,name ,right) #f)))]
+           (values (parsed `(var ,type ,name ,right)) #f)))]
 
       ;; List x = ...
       [(list (and (? id?) type) (and (? id?) name) '= right-side ...)
@@ -306,7 +327,7 @@
          (error 'enforest-java "cannot have anything next to a variable definition ~a" current)
          (let ()
            (define right (first (parse-all right-side environment)))
-           (values `(var ,type ,name ,right) #f)))]
+           (values (parsed `(var ,type ,name ,right)) #f)))]
 
       [(list (list '#%brackets expr ...) more ...)
        (if (not current)
@@ -314,6 +335,35 @@
          (let ()
            (define inside (first (parse-all expr environment)))
            (parse more precedence left (parsed `(lookup ,current ,inside)))))]
+
+      [(list (list '#%parens (and (? (lambda (id)
+                                       (type? id environment)))
+                                  type)) rest ...)
+       (debug "Parse cast id ~a current ~a\n" type current)
+       (if current
+         (let ()
+           (values (left current) stream)
+           #;
+           (parse rest precedence (lambda (right) (left (parsed `(cast ,current ,right ,x)))) #f)
+
+           #;
+           (define-values (right more) (enforest-java stream environment))
+           #;
+           (parse more precedence (lambda (x) (parsed `(cast ,current ,right ,x))) #f))
+         (parse rest cast-precedence (lambda (x) (left (parsed `(cast ,type ,x)))) #f)
+         #;
+         (parse rest precedence left (parsed x)))
+
+       #;
+       (if current
+         (values (left current) stream)
+         (parse rest precedence left (parsed x)))]
+
+       [(list (and (? id?) x) rest ...)
+        (if current
+          (values (left current) stream)
+          (parse rest precedence left (parsed x)))]
+
 
       ;; new foo()
       [(list 'new (and (? id?) constructor) (list '#%parens args ...)
@@ -332,7 +382,8 @@
            (let ()
              (define function (left current))
              (define parsed-args (parse-args args environment))
-             (parse more function-call-precedence (lambda (x) x) `(call ,function ,@parsed-args)))
+             (parse more function-call-precedence (lambda (x) x)
+                    (parsed `(call ,function ,@parsed-args))))
            (let ()
              (define parsed-args (parse-args args environment))
              (parse more precedence left (parsed `(call ,current ,@parsed-args)))))
@@ -341,17 +392,7 @@
            (define inner (parse-all args environment))
            (parse more precedence left inner)))]
 
-      [(list (and (? id?) x) rest ...)
-       (debug "Parse id ~a\n" x)
-       (if current
-         (let ()
-           (define-values (right more) (enforest-java stream environment))
-           (parse more precedence (lambda (x) (parsed `(cast ,current ,right ,x))) #f))
-         (parse rest precedence left (parsed x)))
-       #;
-       (if current
-         (values (left current) stream)
-         (parse rest precedence left (parsed x)))]
+      
 
       [(list (and (? string?) x) rest ...)
        (if current
@@ -427,13 +468,13 @@
   (debug "Unparse ~a\n" (pretty-format input))
   (match input
     [(list (list)) so-far]
-    [(list (list 'package name ...) more ...)
+    [(list (list 'package name ...) more)
      (unparse-java more tabs (string-append so-far (format "package ~a;" (package-name name))))]
-    [(list (list 'import name ...) more ...)
+    [(list (list 'import name ...) more)
      (unparse-java more tabs (string-append so-far (format "\nimport ~a;" (package-name name))))]
     [(list (list 'class name body ...) more ...)
      (unparse-java more tabs (string-append so-far (format "\nclass ~a{\n~a\n~a}" name (unparse-java body (add-tab tabs)) tabs)))]
-    [(list (list 'var name type stuff) more ...)
+    [(list (list 'var name type stuff ...) more ...)
      (unparse-java more tabs (string-append so-far (format "\n~aprivate ~a ~a;" tabs type name)))]
     [(list (list 'constructor name body) more ...)
      (unparse-java more tabs
@@ -555,7 +596,7 @@
     [(list 'expression (list 'not more))
      (string-append so-far (format "!(~a)" (unparse-java `(expression ,@more) tabs)))]
     [(list 'expression (list 'unary-op op x))
-     (string-append so-far (format "~a~a" op (unparse-java `(expression ,x) tabs)))]
+     (string-append so-far (format "(~a~a)" op (unparse-java `(expression ,x) tabs)))]
 
     [(list 'body (and x (list 'op blah ...)) more ...)
      (unparse-java `(body ,@more)
@@ -568,11 +609,11 @@
                    (string-append so-far (format "~a~a;" tabs (unparse-java `(expression ,first) tabs))))]
 
     [(list 'expression (list 'op op a b))
-     (string-append so-far (format "~a ~a ~a"
+     (string-append so-far (format "(~a ~a ~a)"
                                    (unparse-java `(expression ,a) tabs)
                                    op
                                    (unparse-java `(expression ,b) tabs)))]
-    [(list 'expression (list 'cast (list class) expr ignore))
+    [(list 'expression (list 'cast class expr))
      (string-append so-far (format "(~a) ~a" class (unparse-java `(expression ,expr) tabs)))]
 
     [(list 'expression (list 'call function args ...))
@@ -677,6 +718,10 @@
   (add-binding! environment * java-*)
   (add-binding! environment / java-/)
   (add-binding! environment = java-=)
+  (add-binding! environment < java-<)
+  (add-binding! environment == java-==)
+  (add-binding! environment += java-+=)
+  (add-binding! environment ! java-!)
   (add-binding! environment %dot java-dot)
   (add-binding! environment macro create-java-macro)
   (add-binding! environment java-unparsed-top java-unparsed-top)
@@ -698,7 +743,7 @@
     [else input]))
 
 (define (expand-java environment code)
-  (debug "Expand ~a\n" code)
+  (debug "Expand ~a\n" (pretty-format code))
   (match code
     [(? number?) code]
     [(? string?) code]
@@ -718,7 +763,8 @@
       `(begin ,@stuff)]
 
      [(list 'class name body)
-      (define body* (linearize (expand-java environment body)))
+      (define new-environment (update-bindings environment name 'type))
+      (define body* (linearize (expand-java new-environment body)))
       `(class ,name ,@body*)]
 
      #;
@@ -797,7 +843,7 @@
      [(list 'var name type stuff ...)
       (define stuff* (expand-java environment stuff))
       (add-binding-name! environment name 'lexical)
-      `(var ,name ,type ,stuff*)]
+      `(var ,name ,type ,@stuff*)]
 
      [(and x (list 'macro name macro))
       (add-binding-name! environment name macro)
