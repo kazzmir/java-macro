@@ -821,7 +821,7 @@
      [(list 'import stuff ...) `(import ,@stuff)]
 
      [(list 'method name type body)
-      (define body* (expand-java environment body))
+      (define body* (expand-java (copy-environment environment) body))
       `(method ,name ,type ,body*)]
 
      [(list 'assign left right)
