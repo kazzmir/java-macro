@@ -451,8 +451,13 @@
 
     [(list 'body (list)) so-far]
 
-    [(list 'body 'begin (list inside ...) more ...)
-     (unparse-java `(body ,@inside ,@more)
+    [(list 'body 'begin inside more ...)
+     (unparse-java `(body ,inside ,@more)
+                   tabs
+                   so-far)]
+
+    [(list 'body (list 'begin inside ...))
+     (unparse-java `(body ,@inside)
                    tabs
                    so-far)]
 
@@ -615,6 +620,9 @@
 (define-syntax-rule (add-binding! environment symbol value)
                     (hash-set! environment 'symbol value))
 
+(define (add-binding-name! environment symbol value)
+  (hash-set! environment symbol value))
+
 (struct macro (function))
 (define-syntax-rule (define-macro (name arg ...) body ...)
                     (define name (macro (lambda (arg ...) body ...))))
@@ -623,7 +631,7 @@
   (match stx
     [(list) '()]
     [else (let-values ([(parsed unparsed) (enforest-java-class-body stx environment)])
-            `(,parsed (java-unparsed-body ,@unparsed)))]))
+            `(begin ,parsed (java-unparsed-body ,@unparsed)))]))
 
 (define (remove-parsed input)
   (match input
@@ -643,10 +651,12 @@
             (if (parsed? parse)
               (let ([inside (remove-parsed parse)])
                 (if (null? unparsed)
-                  `(,inside)
-                  `(,inside (java-unparsed-method ,@unparsed))))
+                  `(begin ,inside)
+                  `(begin ,inside (java-unparsed-method ,@unparsed))))
+              (if (null? unparsed)
+                `(java-unparsed-method ,@parse)
                 `(begin (java-unparsed-method ,@parse)
-                        (java-unparsed-method ,@unparsed)))
+                        (java-unparsed-method ,@unparsed))))
               )]))
 
 (define-macro (java-unparsed-top stx environment)
@@ -679,6 +689,14 @@
   (hash-set! new name value)
   new)
 
+(define (linearize input)
+  (match input
+    [(list 'begin a)
+     (linearize a)]
+    [(list 'begin a x)
+     (cons (linearize a) (linearize x))]
+    [else input]))
+
 (define (expand-java environment code)
   (debug "Expand ~a\n" code)
   (match code
@@ -693,12 +711,14 @@
 
      [(list 'begin x ...)
       (debug "Begin ~a\n" x)
-      `(begin ,@
-              (for/list ([x x])
-                (expand-java environment x)))]
+      (define stuff
+        (filter values
+                (for/list ([x x])
+                  (expand-java environment x))))
+      `(begin ,@stuff)]
 
      [(list 'class name body)
-      (define body* (expand-java environment body))
+      (define body* (linearize (expand-java environment body)))
       `(class ,name ,@body*)]
 
      #;
@@ -776,19 +796,23 @@
 
      [(list 'var name type stuff ...)
       (define stuff* (expand-java environment stuff))
-      (add-binding! environment name 'lexical)
+      (add-binding-name! environment name 'lexical)
       `(var ,name ,type ,stuff*)]
 
      [(and x (list 'macro name macro))
-      (add-binding! environment name macro)]
+      (add-binding-name! environment name macro)
+      #f]
 
      [(and x (list 'call stuff ...)) x]
 
      [(list first rest ...)
       (define first* (expand-java environment first))
       (define rest* (expand-java environment rest))
-      
-      `(,first* ,@rest*)]
+
+      ;; first could be a macro definition which goes away completely
+      (if first*
+        `(,first* ,@rest*)
+        rest*)]
      [(list) '()]
      [(list (list)) '()]
      [else (error 'expand-java "don't know how to expand ~a" code)]
