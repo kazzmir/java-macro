@@ -221,7 +221,8 @@
       (let ()
         (define-values (parsed unparsed)
                        (enforest-java more environment))
-        (loop (cons parsed all) unparsed)))))
+        (define final-parsed (if (parsed? parsed) parsed (first (parse-all parsed environment))))
+        (loop (cons final-parsed all) unparsed)))))
 
 (define debug printf)
 ; (define-syntax-rule (debug x ...) (void))
@@ -245,19 +246,24 @@
                  (and (? symbol?) type) (and (? symbol?) var))
            more ...)
      (values `(var ,var ,type) more)]
+    [(list 'public 'class (and (? id?) id) (list '#%braces body ...) more ...)
+     (values `(class ,id (java-unparsed-body ,@body)) more)]
     [(list (or 'public 'private) (and (? id?) id) (list '#%parens args ...)
            (list '#%braces body ...)
            more ...)
-     #;
-     (define code (parse-body body environment))
-     #;
-     (debug "Constructor body ~a\n" (pretty-format code))
      (values `(constructor ,id (java-unparsed-method ,@body)) more)]
+
     [(list (or 'public 'private) (and (? id?) type)
            (and (? id?) id) (list '#%parens args ...)
            (list '#%braces body ...)
            more ...)
      (values `(method ,id ,type (java-unparsed-method ,@body)) more)]
+
+    [(list (list '%semicolon (or 'public 'private) 'abstract (and (? id?) type)
+           (and (? id?) id) (list '#%parens args ...))
+           more ...)
+     (values `(abstract-method ,id ,type) more)]
+
     [(list (or 'public 'private)
            (and (? symbol?) type) '< (not '>) ... '>
            (and (? symbol?) id) (list '#%parens args ...)
@@ -433,6 +439,17 @@
          (values (left current) stream)
          (parse rest precedence left (parsed x)))]
 
+      [(list 'new (and (? (lambda (i) (type? i environment))) constructor)
+             (list '#%parens args ...)
+             (list '#%braces body ...)
+             rest ...)
+       (if current
+         (values (left current) stream)
+         (let ()
+           (define parsed-args (parse-args args environment))
+           (define output (parsed `(new-class ,constructor ,parsed-args (java-unparsed-body ,@body))))
+           (parse rest precedence left output)))]
+
       ;; new foo()
       [(list 'new (and (? id?) constructor)
              (list '#%parens args ...)
@@ -562,12 +579,25 @@
                                           tabs name
                                           (unparse-java `(body ,@body) (add-tab tabs))
                                           tabs)))]
+
+    [(list 'begin) so-far]
+
+    [(list 'begin more rest ...)
+     (unparse-java `(begin ,@rest) tabs
+                   (unparse-java (list more) tabs so-far))]
+
     [(list (list 'method name type body) more ...)
      (unparse-java more tabs
                    (string-append so-far
                                   (format "\n~apublic ~a ~a(){\n~a\n~a}\n"
                                           tabs type name
                                           (unparse-java `(body ,@body) (add-tab tabs)) tabs)))]
+
+    [(list (list 'abstract-method name type) more ...)
+     (unparse-java more tabs
+                   (string-append so-far
+                                  (format "\n~apublic abstract ~a ~a();\n"
+                                          tabs type name)))]
 
     [(list 'body (list)) so-far]
 
@@ -605,6 +635,18 @@
                    (string-append so-far (format "~areturn ~a;"
                                                  tabs
                                                  (unparse-java `(expression ,expr) tabs))))]
+
+    [(list 'expression (list 'new-class id (list arg ...) body))
+     (string-append so-far (format "new ~a(~a){\n~a~a\n~a}"
+                                   id 
+                                   (apply string-append
+                                          (add-between
+                                            (for/list ([arg arg]) (unparse-java `(expression ,arg) tabs))
+                                            ","))
+                                   tabs
+                                   (unparse-java body (add-tab tabs))
+                                   tabs))]
+
     [(list 'expression (list 'new type args ...))
      (string-append so-far (format "new ~a(~a)" type
                                    (apply string-append
@@ -824,6 +866,7 @@
   (add-binding! environment int 'type)
   (add-binding! environment void 'type)
   (add-binding! environment List 'type)
+  (add-binding! environment Object 'type)
   (add-binding! environment Iterator 'type)
 
   environment)
@@ -863,8 +906,9 @@
       `(begin ,@stuff)]
 
      [(list 'class name body)
-      (define new-environment (update-bindings environment name 'type))
-      (define body* (linearize (expand-java new-environment body)))
+      (add-binding-name! environment name 'type)
+      ; (define new-environment (update-bindings environment name 'type))
+      (define body* (linearize (expand-java environment body)))
       `(class ,name ,@body*)]
 
      #;
@@ -926,6 +970,9 @@
      [(list 'method name type body)
       (define body* (expand-java (copy-environment environment) body))
       `(method ,name ,type ,body*)]
+     
+     [(list 'abstract-method name type)
+      `(abstract-method ,name ,type)]
 
      [(list 'assign left right)
       (define left* (expand-java environment left))
@@ -936,6 +983,10 @@
       (define left* (expand-java environment left))
       (define right* (expand-java environment right))
       `(op ,op ,left* ,right*)]
+
+     [(list 'new-class what args body)
+      (define body* (expand-java environment body))
+      `(new-class ,what ,args ,body*)]
 
      [(list 'new what args ...) `(new ,what ,@args)]
      [(list 'dot left right)
