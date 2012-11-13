@@ -37,28 +37,79 @@
 (define (is-operator? what environment)
   (operator? (environment-value environment what)))
 
-(struct pattern-output [pattern-var value rest])
+(struct pattern-output [pattern-var value rest next])
+
+(define (combine-output output1 output2)
+  (cond
+    [(not output1) output2]
+    [(not output2) output1]
+    [else 
+      (when (not (null? (pattern-output-rest output1)))
+        (error 'combine-output "pattern 1 output should be empty" (pattern-output-rest output1)))
+      (pattern-output (pattern-output-pattern-var output2)
+                      (pattern-output-value output2)
+                      (pattern-output-rest output2)
+                      output1)]))
+
+(define (parse-type input environment)
+  (match input
+    [(list (and type (? (lambda (i) (type? i environment)))) more ...)
+     (values type more)]))
 
 (define (interpret-pattern pattern input environment)
+  (debug "Interpret pattern ~a\n" pattern)
   (match pattern
+    [(list) #f]
+    [(list (and (? symbol?) x) '%colon 'id rest ...)
+     (match input
+       [(list (and id (? id?)) input-rest ...)
+        (combine-output (pattern-output x id '() #f)
+                        (interpret-pattern rest input-rest environment))])]
+    [(list (and (? symbol?) x) '%colon 'type rest ...)
+     (define-values (parsed unparsed)
+                    (parse-type input environment))
+     (combine-output (pattern-output x parsed '() #f)
+                     (interpret-pattern rest unparsed environment))]
+    [(list (list '#%parens pattern-inside ...) pattern-more ...)
+     (match input
+       [(list (list '#%parens input-inside ...) input-more ...)
+        (combine-output
+          (interpret-pattern pattern-inside input-inside environment)
+          (interpret-pattern pattern-more input-more environment))])]
     [(list (and (? symbol?) x) '%colon 'expression rest ...)
      (define-values (parsed unparsed) (enforest-java input environment))
-     (pattern-output x parsed unparsed)]))
+     (combine-output
+       (pattern-output x parsed '() #f)
+       (interpret-pattern rest unparsed environment))]
+    [(list (and (? symbol?) id) rest ...)
+     (define-values (parsed unparsed) (values (car input) (cdr input)))
+     (combine-output
+       (pattern-output id parsed '() #f)
+       (interpret-pattern rest unparsed environment))]
+    ))
 
-(define (replace input id with)
-  (match input
-    [(? (lambda (in) (eq? id in))) with]
-    [(or (? symbol?) (? number?)) input]
-    [(list x ...)
-     (for/list ([x x])
-       (replace x id with))]))
+(define (replace input output)
+  (if output
+    (let ()
+      (define var (pattern-output-pattern-var output))
+      (define value (pattern-output-value output))
+      (define new-input
+        (match input
+          [(? (lambda (in) (eq? in var))) value]
+          [(struct parsed (inside))
+           (parsed (replace inside output))]
+          [(or (? symbol?) (? number?)) input]
+          [(list x ...)
+           (for/list ([x x])
+             (replace x output))]))
+      (replace new-input (pattern-output-next output)))
+    input))
 
 (define (project-output body output)
   (match body
     [(list 'syntax (list '#%parens template ...))
      (replace template
-              (pattern-output-pattern-var output)
-              (pattern-output-value output))]))
+              output)]))
 
 (define-java-macro (create-java-macro stx environment)
   (match stx
@@ -188,6 +239,7 @@
       (reverse all))))
 
 (define (enforest-java-class-body body environment)
+  (debug "Enforest class body ~a\n" (pretty-format body))
   (match body
     [(list (list '%semicolon (or 'public 'private 'protected)
                  (and (? symbol?) type) (and (? symbol?) var))
@@ -205,15 +257,13 @@
            (and (? id?) id) (list '#%parens args ...)
            (list '#%braces body ...)
            more ...)
-     (define code (parse-body body environment))
-     (values `(method ,id ,type (java-unparsed-method ,@code)) more)]
+     (values `(method ,id ,type (java-unparsed-method ,@body)) more)]
     [(list (or 'public 'private)
            (and (? symbol?) type) '< (not '>) ... '>
            (and (? symbol?) id) (list '#%parens args ...)
            (list '#%braces body ...)
            more ...)
-     (define code (parse-body body environment))
-     (values `(method ,id ,type (java-unparsed-method ,@code)) more)]
+     (values `(method ,id ,type (java-unparsed-method ,@body)) more)]
     [else (error 'parse-class-body "can't parse ~a" body)]))
 
 (define (enforest-java input environment)
@@ -293,6 +343,11 @@
            (define body (parse-all body-code environment))
            (values (parsed `(for ,init ,until ,update ,@body)) rest)))]
 
+      [(list 'while (list '#%parens inside ...) (list '#%braces body ...) rest ...)
+       (define condition (parse-all inside environment))
+       (values (parsed `(while ,condition (java-unparsed-method ,@body)))
+               rest)]
+
       [(list '#%braces code ...)
        (define inner (parse-all code environment))
        (values (parsed `(body ,@inner)) #f)]
@@ -309,6 +364,9 @@
        (define condition (first (parse-all condition-code environment)))
        (define then (parse-all then-code environment))
        (values (parsed `(if ,condition (body ,@then))) more)]
+
+      [(list (list '#%braces inside ...) rest ...)
+       (values (parsed `(java-unparsed-method ,@inside)) rest)]
 
       [(list 'return rest ...)
        (define returned (first (parse-all rest environment)))
@@ -604,6 +662,15 @@
                                           tabs
                                           )))]
 
+    [(list 'body (list 'while condition body) more ...)
+     (unparse-java `(body ,@more) tabs
+                   (string-append so-far
+                                  (format "\n~awhile (~a){\n~a\n~a}\n"
+                                          tabs
+                                          (unparse-java `(expression ,@condition) "")
+                                          (unparse-java `(body ,@body) (add-tab tabs))
+                                          tabs)))]
+
     [(list 'body (list 'for init condition rest body) more ...)
      (unparse-java `(body ,@more) tabs 
                    (string-append so-far
@@ -757,6 +824,7 @@
   (add-binding! environment int 'type)
   (add-binding! environment void 'type)
   (add-binding! environment List 'type)
+  (add-binding! environment Iterator 'type)
 
   environment)
 
@@ -781,6 +849,7 @@
     ;; should check that the symbol is bound
     [(? symbol?) code]
      [(list (and symbol? (? (lambda (x) (is-macro? x environment))) id) rest ...)
+      (debug "Expand macro ~a\n" id)
       (define macro (environment-value environment id))
       (define output ((macro-function macro) rest environment))
       (expand-java environment output)]
@@ -880,6 +949,7 @@
       `(var ,name ,type ,@stuff*)]
 
      [(and x (list 'macro name macro))
+      (debug "Add macro binding for ~a\n" name)
       (add-binding-name! environment name macro)
       #f]
 
