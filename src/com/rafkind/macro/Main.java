@@ -1,6 +1,8 @@
 package com.rafkind.macro;
 
 import java.io.*;
+import java.util.List;
+import java.util.ArrayList;
 import java.util.regex.Pattern;
 import java.util.regex.Matcher;
 
@@ -44,15 +46,45 @@ class JavaLexer{
     Pattern digit = Pattern.compile("[0-9]");
     Pattern identifierChar = Pattern.compile(String.format("%1$s|%2$s", identifierCharFirst.toString(), digit.toString()));
     Pattern identifier = Pattern.compile(String.format("%1$s%2s*", identifierCharFirst.toString(), identifierChar.toString()));
+    Pattern whitespace = Pattern.compile("\\s+");
 
     /* All the input as a string */
     String input;
     /* Index into the input. Used with Matcher regions */
     int position;
 
+    private static interface Action{
+        public Token get(String lexeme);
+    }
+
+    private static class Lexer{
+        public Lexer(Pattern pattern, Action action){
+            this.pattern = pattern;
+            this.action = action;
+        }
+
+        Pattern pattern;
+        Action action;
+    }
+    
+    /* Ordered list */
+    List<Lexer> lexers = new ArrayList<Lexer>();
+
     public JavaLexer(InputStream stream) throws IOException {
         input = readInput(stream);
         position = 0;
+
+        lexers.add(new Lexer(identifier, new Action(){
+            public Token get(String lexeme){
+                return new Token.Identifier(lexeme);
+            }
+        }));
+
+        lexers.add(new Lexer(whitespace, new Action(){
+            public Token get(String lexeme){
+                return new Token.Whitespace();
+            }
+        }));
     }
 
     /* Read the entire stream into a string */
@@ -76,13 +108,17 @@ class JavaLexer{
     }
 
     Token next(){
-        Matcher matcher = identifier.matcher(input);
-        matcher.region(position, input.length());
-        if (matcher.lookingAt()){
-            // System.out.println(String.format("Matched from %d to %d", matcher.start(), matcher.end()));
-            position = matcher.end();
-            String out = input.substring(matcher.start(), matcher.end());
-            return new Token.Identifier(out);
+
+        /* Find the first lexer that matches and return its token */
+        for (Lexer lexer: lexers){
+            Matcher matcher = lexer.pattern.matcher(input);
+            matcher.region(position, input.length());
+            if (matcher.lookingAt()){
+                // System.out.println(String.format("Matched from %d to %d", matcher.start(), matcher.end()));
+                position = matcher.end();
+                String out = input.substring(matcher.start(), matcher.end());
+                return lexer.action.get(out);
+            }
         }
 
         return Token.Eof;
@@ -106,5 +142,11 @@ class Token{
             return value;
         }
 
+    }
+
+    public static class Whitespace extends Token{
+        public String toString(){
+            return "";
+        }
     }
 }
