@@ -198,6 +198,7 @@
 
 (define cast-precedence 10)
 (define function-call-precedence 99)
+(define ternary-precedence 0.15)
 #;
 (define (operator-precedence operator)
   (case operator
@@ -210,6 +211,13 @@
     [(!) 5]
     [else (error 'precedence "unknown precedence for operator ~a" operator)]
     ))
+
+(define (parse-expression stuff environment)
+  (define-values (expr rest)
+                 (enforest-java stuff environment))
+  (when (and rest (not (null? rest)))
+    (error 'parse-expression "left over tokens ~a" rest))
+  expr)
 
 (define (parse-all stuff environment)
   #;
@@ -246,6 +254,19 @@
                  (and (? symbol?) type) (and (? symbol?) var))
            more ...)
      (values `(var ,var ,type) more)]
+
+    [(list (list '%semicolon 
+                 (and (? symbol?) type) (and (? symbol?) var)
+                 '= right-side ...)
+           more ...)
+     (define right (remove-parsed (first (parse-expression right-side environment))))
+     (values `(var ,var ,type ,right) more)]
+
+    [(list (list '%semicolon 
+                 (and (? symbol?) type) (and (? symbol?) var))
+           more ...)
+     (values `(var ,var ,type) more)]
+
     [(list 'public 'class (and (? id?) id) (list '#%braces body ...) more ...)
      (values `(class ,id (java-unparsed-body ,@body)) more)]
     [(list (or 'public 'private) (and (? id?) id) (list '#%parens args ...)
@@ -392,12 +413,29 @@
            (define right (first (parse-all right-side environment)))
            (values (parsed `(var ,type ,name ,right)) #f)))]
 
+      ;; ternary operator
+      [(list '? stuff ...)
+       (if (> precedence ternary-precedence)
+         (error 'ternary "handle higher precedence for ternary")
+         (let ()
+           (define-values (true-part rest)
+                          (parse stuff ternary-precedence (lambda (x) x) #f))
+           (match rest
+             [(list '%colon rest2 ...)
+              ; (define-values (false-part rest3) (parse rest2 ternary-precedence (lambda (x) x) #f))
+              (parse rest2 precedence (lambda (x)
+                                        (parsed `(ternary-op ,(left current)
+                                                             ,true-part
+                                                             ,x)))
+                     #f)]
+             [else (error 'ternary "expected : ... ~a" rest)])))]
+
       ;; List<Foo> x = ...
       [(list (and (? (lambda (i) (type? i environment))) type) '< (and (? id?) generic) '> (and (? id?) name) '= right-side ...)
        (if current
          (error 'enforest-java "cannot have anything next to a variable definition ~a" current)
          (let ()
-           (define right (first (parse-all right-side environment)))
+           (define right (first (parse-expression right-side environment)))
            (values (parsed `(var ,type ,name ,right)) #f)))]
 
       ;; List x = ...
@@ -406,7 +444,7 @@
        (if current
          (error 'enforest-java "cannot have anything next to a variable definition ~a" current)
          (let ()
-           (define right (first (parse-all right-side environment)))
+           (define right (parse-expression right-side environment))
            (values (parsed `(var ,type ,name ,right)) #f)))]
 
       [(list (list '#%brackets expr ...) more ...)
@@ -654,6 +692,12 @@
                                             (for/list ([arg args]) (unparse-java `(expression ,arg) tabs))
                                             ",")))
                                             )]
+
+    [(list 'expression (list 'ternary-op condition true false))
+     (string-append so-far (format "~a ? ~a : ~a"
+                                   (unparse-java `(expression ,condition) "")
+                                   (unparse-java `(expression ,true) "")
+                                   (unparse-java `(expression ,false) "")))]
 
     [(list 'body (list 'var type name expr) more ...)
      (unparse-java `(body ,@more)
