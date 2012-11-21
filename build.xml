@@ -1,0 +1,8 @@
+<project name="java macros" default="compile">
+    <target name="compile">
+        <mkdir dir="classes" />
+        <javac srcdir="src"
+            destdir="classes"
+            debug="on" />
+    </target>
+</project>
