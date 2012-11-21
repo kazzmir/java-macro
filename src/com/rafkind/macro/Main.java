@@ -35,6 +35,7 @@ public class Main{
     public static void main(String... args){
         if (args.length < 1){
             System.out.println("Give a .java file as an argument");
+            return;
         }
 
         process(args[0]);
@@ -84,8 +85,9 @@ class JavaLexer{
         Pattern whitespace = Pattern.compile("\\s+");
         Pattern number = Pattern.compile(String.format("%1$s(\\.$1%s+)?", digit));
         Pattern operators = Pattern.compile("!=|!|=|\\+|\\?|:|>|<|-|\\*");
-        Pattern string = Pattern.compile("\\\"([^\\\"]|\\.)*\\\"");
+        Pattern string = Pattern.compile("\\\"(\\\\.|[^\\\"])*\\\"");
         Pattern endOfLineComment = Pattern.compile("//[^\n]*");
+        Pattern comment = Pattern.compile("/\\*(?:[^*]|(?:\\*+[^*/]))*\\*+/");
 
         lexers.add(new Lexer(identifier, new Action(){
             public Token get(String lexeme){
@@ -172,6 +174,12 @@ class JavaLexer{
         }));
 
         lexers.add(new Lexer(endOfLineComment, new Action(){
+            public Token get(String lexeme){
+                return new Token.Whitespace();
+            }
+        }));
+
+        lexers.add(new Lexer(comment, new Action(){
             public Token get(String lexeme){
                 return new Token.Whitespace();
             }
