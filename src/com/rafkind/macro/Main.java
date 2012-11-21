@@ -42,12 +42,6 @@ class Syntax{
 }
 
 class JavaLexer{
-    Pattern identifierCharFirst = Pattern.compile("[a-zA-Z_]");
-    Pattern digit = Pattern.compile("[0-9]");
-    Pattern identifierChar = Pattern.compile(String.format("%1$s|%2$s", identifierCharFirst.toString(), digit.toString()));
-    Pattern identifier = Pattern.compile(String.format("%1$s%2s*", identifierCharFirst.toString(), identifierChar.toString()));
-    Pattern whitespace = Pattern.compile("\\s+");
-
     /* All the input as a string */
     String input;
     /* Index into the input. Used with Matcher regions */
@@ -74,6 +68,14 @@ class JavaLexer{
         input = readInput(stream);
         position = 0;
 
+        Pattern identifierCharFirst = Pattern.compile("[a-zA-Z_]");
+        Pattern digit = Pattern.compile("[0-9]");
+        Pattern identifierChar = Pattern.compile(String.format("%1$s|%2$s", identifierCharFirst.toString(), digit.toString()));
+        Pattern identifier = Pattern.compile(String.format("%1$s%2s*", identifierCharFirst.toString(), identifierChar.toString()));
+        Pattern whitespace = Pattern.compile("\\s+");
+        Pattern number = Pattern.compile(String.format("%1$s(\\.$1%s+)?", digit));
+        Pattern operators = Pattern.compile("=|\\+|\\?|:");
+
         lexers.add(new Lexer(identifier, new Action(){
             public Token get(String lexeme){
                 return new Token.Identifier(lexeme);
@@ -83,6 +85,48 @@ class JavaLexer{
         lexers.add(new Lexer(whitespace, new Action(){
             public Token get(String lexeme){
                 return new Token.Whitespace();
+            }
+        }));
+
+        lexers.add(new Lexer(Pattern.compile("\\{"), new Action(){
+            public Token get(String lexeme){
+                return new Token.LeftBracket();
+            }
+        }));
+
+        lexers.add(new Lexer(Pattern.compile("\\}"), new Action(){
+            public Token get(String lexeme){
+                return new Token.RightBracket();
+            }
+        }));
+
+        lexers.add(new Lexer(Pattern.compile("\\("), new Action(){
+            public Token get(String lexeme){
+                return new Token.LeftParen();
+            }
+        }));
+
+        lexers.add(new Lexer(Pattern.compile("\\)"), new Action(){
+            public Token get(String lexeme){
+                return new Token.RightParen();
+            }
+        }));
+
+        lexers.add(new Lexer(number, new Action(){
+            public Token get(String lexeme){
+                return new Token.Number(lexeme);
+            }
+        }));
+
+        lexers.add(new Lexer(operators, new Action(){
+            public Token get(String lexeme){
+                return new Token.Identifier(lexeme);
+            }
+        }));
+
+        lexers.add(new Lexer(Pattern.compile(";"), new Action(){
+            public Token get(String lexeme){
+                return new Token.Semicolon();
             }
         }));
     }
@@ -131,7 +175,7 @@ class Token{
     public Token(){
     }
 
-    public static class Identifier extends Token{
+    public static class Identifier extends Token {
         public Identifier(String value){
             this.value = value;
         }
@@ -144,9 +188,51 @@ class Token{
 
     }
 
-    public static class Whitespace extends Token{
+    public static class Whitespace extends Token {
         public String toString(){
             return "";
+        }
+    }
+
+    public static class LeftBracket extends Token {
+        public String toString(){
+            return "{";
+        }
+    }
+
+    public static class RightBracket extends Token {
+        public String toString(){
+            return "}";
+        }
+    }
+
+    public static class LeftParen extends Token {
+        public String toString(){
+            return "(";
+        }
+    }
+
+    public static class RightParen extends Token {
+        public String toString(){
+            return ")";
+        }
+    }
+
+    public static class Number extends Token {
+        public Number(String value){
+            this.value = value;
+        }
+
+        String value;
+
+        public String toString(){
+            return value;
+        }
+    }
+
+    public static class Semicolon extends Token {
+        public String toString(){
+            return ";";
         }
     }
 }
