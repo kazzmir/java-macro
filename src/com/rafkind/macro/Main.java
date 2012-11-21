@@ -16,10 +16,13 @@ public class Main{
         } catch (IOException fail){
             System.out.println("Could not process " + file);
             System.err.println(fail);
+        } catch (JavaLexer.LexerException fail){
+            System.out.println("Could not process " + file);
+            System.err.println(fail);
         }
     }
 
-    private static Syntax read(InputStream stream) throws IOException {
+    private static Syntax read(InputStream stream) throws IOException, JavaLexer.LexerException {
         JavaLexer lexer = new JavaLexer(stream);
         Token token = lexer.next();
         while (token != Token.Eof){
@@ -46,6 +49,12 @@ class JavaLexer{
     String input;
     /* Index into the input. Used with Matcher regions */
     int position;
+
+    public static class LexerException extends Exception {
+        public LexerException(String fail){
+            super(fail);
+        }
+    }
 
     private static interface Action{
         public Token get(String lexeme);
@@ -74,7 +83,8 @@ class JavaLexer{
         Pattern identifier = Pattern.compile(String.format("%1$s%2s*", identifierCharFirst.toString(), identifierChar.toString()));
         Pattern whitespace = Pattern.compile("\\s+");
         Pattern number = Pattern.compile(String.format("%1$s(\\.$1%s+)?", digit));
-        Pattern operators = Pattern.compile("=|\\+|\\?|:");
+        Pattern operators = Pattern.compile("=|\\+|\\?|:|>|<|-|\\*");
+        Pattern string = Pattern.compile("\\\"([^\\\"]|\\.)*\\\"");
 
         lexers.add(new Lexer(identifier, new Action(){
             public Token get(String lexeme){
@@ -129,6 +139,24 @@ class JavaLexer{
                 return new Token.Semicolon();
             }
         }));
+
+        lexers.add(new Lexer(Pattern.compile("\\."), new Action(){
+            public Token get(String lexeme){
+                return new Token.Identifier("%dot");
+            }
+        }));
+
+        lexers.add(new Lexer(Pattern.compile(","), new Action(){
+            public Token get(String lexeme){
+                return new Token.Identifier("%comma");
+            }
+        }));
+
+        lexers.add(new Lexer(string, new Action(){
+            public Token get(String lexeme){
+                return new Token.StringToken(lexeme);
+            }
+        }));
     }
 
     /* Read the entire stream into a string */
@@ -151,7 +179,11 @@ class JavaLexer{
         return builder.toString();
     }
 
-    Token next(){
+    Token next() throws LexerException {
+
+        if (position >= input.length()){
+            return Token.Eof;
+        }
 
         /* Find the first lexer that matches and return its token */
         for (Lexer lexer: lexers){
@@ -165,7 +197,7 @@ class JavaLexer{
             }
         }
 
-        return Token.Eof;
+        throw new LexerException("Could not lex input starting with: " + input.substring(position, position + 20));
     }
 }
 
@@ -233,6 +265,18 @@ class Token{
     public static class Semicolon extends Token {
         public String toString(){
             return ";";
+        }
+    }
+
+    public static class StringToken extends Token {
+        public StringToken(String value){
+            this.value = value;
+        }
+
+        String value;
+
+        public String toString(){
+            return value;
         }
     }
 }
