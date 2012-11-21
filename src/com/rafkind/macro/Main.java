@@ -83,8 +83,9 @@ class JavaLexer{
         Pattern identifier = Pattern.compile(String.format("%1$s%2s*", identifierCharFirst.toString(), identifierChar.toString()));
         Pattern whitespace = Pattern.compile("\\s+");
         Pattern number = Pattern.compile(String.format("%1$s(\\.$1%s+)?", digit));
-        Pattern operators = Pattern.compile("=|\\+|\\?|:|>|<|-|\\*");
+        Pattern operators = Pattern.compile("!=|!|=|\\+|\\?|:|>|<|-|\\*");
         Pattern string = Pattern.compile("\\\"([^\\\"]|\\.)*\\\"");
+        Pattern endOfLineComment = Pattern.compile("//[^\n]*");
 
         lexers.add(new Lexer(identifier, new Action(){
             public Token get(String lexeme){
@@ -100,13 +101,13 @@ class JavaLexer{
 
         lexers.add(new Lexer(Pattern.compile("\\{"), new Action(){
             public Token get(String lexeme){
-                return new Token.LeftBracket();
+                return new Token.LeftBrace();
             }
         }));
 
         lexers.add(new Lexer(Pattern.compile("\\}"), new Action(){
             public Token get(String lexeme){
-                return new Token.RightBracket();
+                return new Token.RightBrace();
             }
         }));
 
@@ -119,6 +120,18 @@ class JavaLexer{
         lexers.add(new Lexer(Pattern.compile("\\)"), new Action(){
             public Token get(String lexeme){
                 return new Token.RightParen();
+            }
+        }));
+
+        lexers.add(new Lexer(Pattern.compile("\\["), new Action(){
+            public Token get(String lexeme){
+                return new Token.LeftBracket();
+            }
+        }));
+
+        lexers.add(new Lexer(Pattern.compile("\\]"), new Action(){
+            public Token get(String lexeme){
+                return new Token.RightBracket();
             }
         }));
 
@@ -155,6 +168,12 @@ class JavaLexer{
         lexers.add(new Lexer(string, new Action(){
             public Token get(String lexeme){
                 return new Token.StringToken(lexeme);
+            }
+        }));
+
+        lexers.add(new Lexer(endOfLineComment, new Action(){
+            public Token get(String lexeme){
+                return new Token.Whitespace();
             }
         }));
     }
@@ -228,11 +247,23 @@ class Token{
 
     public static class LeftBracket extends Token {
         public String toString(){
-            return "{";
+            return "[";
         }
     }
 
     public static class RightBracket extends Token {
+        public String toString(){
+            return "]";
+        }
+    }
+
+    public static class LeftBrace extends Token {
+        public String toString(){
+            return "{";
+        }
+    }
+
+    public static class RightBrace extends Token {
         public String toString(){
             return "}";
         }
